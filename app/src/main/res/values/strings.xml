@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">EchoAlert</string>
+    <string name="start_listening">Start Listening</string>
+    <string name="stop_listening">Stop Listening</string>
+    <string name="settings">Settings</string>
+    <string name="history_title">Detection History</string>
+    <string name="sensitivity">Sensitivity</string>
+    <string name="doorbell">Doorbell</string>
+    <string name="alarm">Alarm</string>
+    <string name="baby_crying">Baby Crying</string>
+    <string name="phone_ringing">Phone Ringing</string>
+    <string name="knock">Knock</string>
+    <string name="back">Back</string>
+    <string name="status_ready">Ready</string>
+    <string name="status_listening_active">Listening…</string>
+    <string name="sound_detection">Sound Detection</string>
+    <string name="sensitivity_desc">Adjust how loud a sound needs to be to trigger an alert.</string>
+</resources>
