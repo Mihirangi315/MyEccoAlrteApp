@@ -28,6 +28,9 @@ class ListeningService : Service() {
     private var audioRecord: AudioRecord? = null
     private var isRecording = false
 
+    // Reference to the database to save detections
+    private lateinit var database: AppDatabase
+
     // Configuration for AudioRecord (Required for YAMNet model)
     private val sampleRate = 16000 // 16kHz
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
@@ -44,6 +47,10 @@ class ListeningService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // Initialize the ML model brain
+        SoundClassifier.initialize(this)
+        // Get the singleton database instance
+        database = AppDatabase.getDatabase(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -118,23 +125,39 @@ class ListeningService : Service() {
             // Step 2: Start a background loop to read data
             serviceScope.launch {
                 val audioBuffer = ShortArray(sampleRate) // ~1 second of audio at 16kHz
+                val floatBuffer = FloatArray(sampleRate)
 
                 while (isActive && isRecording) {
                     // Step 3: Read data from the microphone into our buffer
                     val readResult = audioRecord?.read(audioBuffer, 0, audioBuffer.size)
 
                     if (readResult != null && readResult > 0) {
-                        // Step 4: Pass the buffer to the ML Layer (SoundClassifier)
-                        val detectedSound = SoundClassifier.classify(audioBuffer)
+                        // Step 4: Convert ShortArray (PCM 16-bit) to FloatArray (-1.0 to 1.0)
+                        // YAMNet expects normalized float values.
+                        for (i in 0 until readResult) {
+                            floatBuffer[i] = audioBuffer[i] / 32768.0f
+                        }
+
+                        // Step 5: Pass the buffer to the ML Layer (SoundClassifier)
+                        val result = SoundClassifier.classify(floatBuffer)
                         
-                        // Step 5: If a sound is detected, trigger the Alert Layer
-                        detectedSound?.let {
-                            AlertManager.trigger(this@ListeningService, it)
+                        // Step 6: If a sound is detected, trigger the Alert Layer and save to DB
+                        result?.let { (label, confidence) ->
+                            // 1. Alert the user immediately
+                            AlertManager.trigger(this@ListeningService, label)
+
+                            // 2. Save the event to the history log in the database
+                            val event = DetectionEvent(
+                                soundLabel = label,
+                                timestamp = System.currentTimeMillis()
+                            )
+                            serviceScope.launch {
+                                database.detectionDao().insert(event)
+                            }
                         }
                     }
                     
                     // Small delay to prevent the loop from eating too much CPU
-                    // (Though AudioRecord.read is blocking, so this is just a safety measure)
                     delay(100) 
                 }
             }
@@ -156,6 +179,7 @@ class ListeningService : Service() {
         super.onDestroy()
         stopListening()
         serviceJob.cancel() // Cleanup the scope
+        SoundClassifier.close() // Release model resources
         Log.d("ListeningService", "Service Destroyed")
     }
 

@@ -16,15 +16,20 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
     private var isListening = false
     private var pulseAnimator: ObjectAnimator? = null
+
+    // Reference to the database
+    private lateinit var database: AppDatabase
 
     /**
      * Helper to request permissions. 
@@ -48,6 +53,9 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
 
+        // Initialize database
+        database = AppDatabase.getDatabase(this)
+
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
@@ -60,18 +68,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupHistoryList() {
         val rvHistory = findViewById<RecyclerView>(R.id.rvHistory)
-        
-        // Updated dummy data with appropriate icons
-        val dummyData = listOf(
-            DetectionEvent("Doorbell", "10:15 AM", R.drawable.ic_doorbell),
-            DetectionEvent("Alarm", "09:45 AM", R.drawable.ic_alarm),
-            DetectionEvent("Knock", "08:30 AM", R.drawable.ic_knock),
-            DetectionEvent("Baby Crying", "07:15 AM", R.drawable.ic_baby),
-            DetectionEvent("Phone Ringing", "06:00 AM", R.drawable.ic_phone_ring)
-        )
-
         rvHistory.layoutManager = LinearLayoutManager(this)
-        rvHistory.adapter = DetectionAdapter(dummyData)
+
+        // Observe the detection history from the database in real-time
+        lifecycleScope.launch {
+            database.detectionDao().getAllDetections().collect { detections ->
+                // Whenever the database changes, this block runs automatically
+                rvHistory.adapter = DetectionAdapter(detections)
+            }
+        }
     }
 
     private fun setupButtons() {
