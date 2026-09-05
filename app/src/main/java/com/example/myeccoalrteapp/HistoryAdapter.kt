@@ -11,8 +11,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class DetectionAdapter(private val events: List<DetectionEvent>) :
-    RecyclerView.Adapter<DetectionAdapter.DetectionViewHolder>() {
+class HistoryAdapter(private val events: List<DetectionEvent>) :
+    RecyclerView.Adapter<HistoryAdapter.DetectionViewHolder>() {
 
     private val dateFormat = SimpleDateFormat("hh:mm a", Locale.getDefault())
 

@@ -15,11 +15,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 
-/**
- * A Foreground Service is required because we need the app to keep recording audio
- * even if the user switches to another app or locks their screen.
- * Regular background threads are often killed by Android to save battery.
- */
 class ListeningService : Service() {
 
     private val serviceJob = Job()
@@ -27,19 +22,24 @@ class ListeningService : Service() {
 
     private var audioRecord: AudioRecord? = null
     private var isRecording = false
-
-    // Reference to the database to save detections
     private lateinit var database: AppDatabase
 
-    // Configuration for AudioRecord (Required for YAMNet model)
-    private val sampleRate = 16000 // 16kHz
-    private val channelConfig = AudioFormat.CHANNEL_IN_MONO
-    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-    private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+    // --- NITRO SPEED SETTINGS ---
+    private val sampleRate = 16000 
+    private val classificationBufferSize = 15600
+    private val stepSize = 1600 // Check every 100ms (10 times a second!)
+    
+    // Cache settings in memory for instant access
+    private var cachedSensitivity = 0.10f
+    private var cachedEnabledSounds = mutableSetOf<String>()
+    private var cachedRingtone = false
+    private var cachedContinuous = true
+    private var lastAlertTime = 0L
 
     companion object {
         private const val CHANNEL_ID = "EchoAlertChannel"
         private const val NOTIFICATION_ID = 1
+        const val ACTION_DISMISS_ALERT = "ACTION_DISMISS_ALERT"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -47,47 +47,53 @@ class ListeningService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        // Initialize the ML model brain
         SoundClassifier.initialize(this)
-        // Get the singleton database instance
         database = AppDatabase.getDatabase(this)
+        
+        // Load settings into cache immediately
+        refreshSettingsCache()
+    }
+
+    private fun refreshSettingsCache() {
+        serviceScope.launch {
+            val settings = database.soundSettingDao().getAllSettings()
+            cachedEnabledSounds.clear()
+            settings.forEach {
+                if (it.soundLabel == "GlobalSensitivity") cachedSensitivity = it.sensitivity
+                else if (it.soundLabel == "RingtoneAlert") cachedRingtone = it.isEnabled
+                else if (it.soundLabel == "ContinuousAlert") cachedContinuous = it.isEnabled
+                else if (it.isEnabled) cachedEnabledSounds.add(it.soundLabel)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d("ListeningService", "Service Started")
+        if (intent?.action == ACTION_DISMISS_ALERT) {
+            AlertManager.stopVibration()
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(1001)
+            return START_STICKY
+        }
         
-        // Start the service in the Foreground immediately
+        refreshSettingsCache() // Refresh cache whenever service is interacted with
+        Log.d("ListeningService", "Service Started (Nitro Mode)")
         startAsForeground()
-        
-        // Start the audio capture loop
         startListening()
-
-        return START_STICKY // Tells Android to restart the service if it gets killed
+        return START_STICKY
     }
 
-    /**
-     * Shows the required persistent notification to the user.
-     */
     private fun startAsForeground() {
         val notificationIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, notificationIntent,
-            PendingIntent.FLAG_IMMUTABLE
-        )
+        val pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE)
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("EchoAlert is Listening")
-            .setContentText("Monitoring for important sounds around you.")
+            .setContentTitle("EchoAlert Active")
+            .setContentText("Listening 10x per second for sounds...")
             .setSmallIcon(R.drawable.ic_listening_active)
             .setContentIntent(pendingIntent)
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID, 
-                notification, 
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -95,103 +101,75 @@ class ListeningService : Service() {
 
     private fun startListening() {
         if (isRecording) return
-        
-        // Verify permission again just in case (though activity should handle it)
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) 
-            != PackageManager.PERMISSION_GRANTED) {
-            stopSelf()
-            return
-        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
 
         try {
-            // Step 1: Initialize AudioRecord
-            // We use MIC as the source and the 16kHz Mono 16-bit format
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                bufferSize
-            )
-
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e("ListeningService", "AudioRecord initialization failed")
-                return
-            }
-
-            isRecording = true
+            audioRecord = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT) * 2)
             audioRecord?.startRecording()
+            isRecording = true
 
-            // Step 2: Start a background loop to read data
             serviceScope.launch {
-                val audioBuffer = ShortArray(sampleRate) // ~1 second of audio at 16kHz
-                val floatBuffer = FloatArray(sampleRate)
+                val slidingBuffer = ShortArray(classificationBufferSize)
+                val floatBuffer = FloatArray(classificationBufferSize)
+                val stepBuffer = ShortArray(stepSize)
 
                 while (isActive && isRecording) {
-                    // Step 3: Read data from the microphone into our buffer
-                    val readResult = audioRecord?.read(audioBuffer, 0, audioBuffer.size)
+                    var read = 0
+                    while (read < stepSize && isActive && isRecording) {
+                        val result = audioRecord?.read(stepBuffer, read, stepSize - read) ?: -1
+                        if (result > 0) read += result else break
+                    }
 
-                    if (readResult != null && readResult > 0) {
-                        // Step 4: Convert ShortArray (PCM 16-bit) to FloatArray (-1.0 to 1.0)
-                        // YAMNet expects normalized float values.
-                        for (i in 0 until readResult) {
-                            floatBuffer[i] = audioBuffer[i] / 32768.0f
+                    if (read == stepSize) {
+                        System.arraycopy(slidingBuffer, stepSize, slidingBuffer, 0, classificationBufferSize - stepSize)
+                        System.arraycopy(stepBuffer, 0, slidingBuffer, classificationBufferSize - stepSize, stepSize)
+
+                        for (i in 0 until classificationBufferSize) {
+                            floatBuffer[i] = slidingBuffer[i] / 32768.0f
                         }
 
-                        // Step 5: Pass the buffer to the ML Layer (SoundClassifier)
                         val result = SoundClassifier.classify(floatBuffer)
-                        
-                        // Step 6: If a sound is detected, trigger the Alert Layer and save to DB
                         result?.let { (label, confidence) ->
-                            // 1. Alert the user immediately
-                            AlertManager.trigger(this@ListeningService, label)
-
-                            // 2. Save the event to the history log in the database
-                            val event = DetectionEvent(
-                                soundLabel = label,
-                                timestamp = System.currentTimeMillis()
-                            )
-                            serviceScope.launch {
-                                database.detectionDao().insert(event)
-                            }
+                            handleDetection(label, confidence)
                         }
                     }
-                    
-                    // Small delay to prevent the loop from eating too much CPU
-                    delay(100) 
                 }
             }
-
-        } catch (e: Exception) {
-            Log.e("ListeningService", "Error starting AudioRecord: ${e.message}")
-        }
+        } catch (e: Exception) { Log.e("ListeningService", "Error: ${e.message}") }
     }
 
-    private fun stopListening() {
-        isRecording = false
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
-        serviceJob.cancelChildren() // Stop the coroutine loop
+    private fun handleDetection(label: String, confidence: Float) {
+        // Instant check using cache (No database delay!)
+        if (cachedEnabledSounds.contains(label) && confidence >= cachedSensitivity) {
+            
+            // Prevent "Double Alerts" within 2 seconds
+            if (System.currentTimeMillis() - lastAlertTime < 2000) return
+            lastAlertTime = System.currentTimeMillis()
+
+            Log.i("ListeningService", "TRIGGER! $label ($confidence)")
+            AlertManager.trigger(this, label, cachedRingtone, cachedContinuous)
+
+            // Save to DB in background
+            serviceScope.launch {
+                database.detectionDao().insert(DetectionEvent(soundLabel = label, timestamp = System.currentTimeMillis()))
+            }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopListening()
-        serviceJob.cancel() // Cleanup the scope
-        SoundClassifier.close() // Release model resources
-        Log.d("ListeningService", "Service Destroyed")
+        isRecording = false
+        audioRecord?.stop()
+        audioRecord?.release()
+        AlertManager.stopVibration()
+        serviceJob.cancel()
+        SoundClassifier.close()
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val serviceChannel = NotificationChannel(
-                CHANNEL_ID,
-                "EchoAlert Listening Service",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(serviceChannel)
+            val channel = NotificationChannel(CHANNEL_ID, "EchoAlert Service", NotificationManager.IMPORTANCE_LOW)
+            (getSystemService(NotificationManager::class.java)).createNotificationChannel(channel)
         }
     }
 }

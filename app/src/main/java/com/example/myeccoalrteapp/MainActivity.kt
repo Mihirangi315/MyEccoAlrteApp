@@ -23,28 +23,30 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import kotlinx.coroutines.launch
 
+/**
+ * MainActivity is the "Conductor" of the EchoAlert app.
+ * It connects all 5 modules: UI, Audio Service, ML, Data (Room), and Alerts.
+ */
 class MainActivity : AppCompatActivity() {
 
+    // --- Module 1: UI State ---
     private var isListening = false
     private var pulseAnimator: ObjectAnimator? = null
-
-    // Reference to the database
     private lateinit var database: AppDatabase
 
     /**
-     * Helper to request permissions. 
-     * RECORD_AUDIO is needed for the microphone.
-     * POST_NOTIFICATIONS is needed for the Foreground Service on Android 13+.
+     * Permission Launcher (Module 2: Audio & Alerts)
+     * We need RECORD_AUDIO to listen and POST_NOTIFICATIONS to alert the user.
      */
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val audioGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
         if (audioGranted) {
-            // Permission granted, now we can start the service
+            // If the user said yes, we can start the service!
             toggleListening()
         } else {
-            Toast.makeText(this, "Microphone permission is required for EchoAlert", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Microphone permission is required!", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -53,9 +55,12 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
 
-        // Initialize database
+        // --- Module 4: Data (Room) ---
+        // Get the single instance of our database
         database = AppDatabase.getDatabase(this)
+        initializeDefaultSettings()
 
+        // UI Setup for modern Android (Edge-to-edge)
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
@@ -66,24 +71,39 @@ class MainActivity : AppCompatActivity() {
         setupButtons()
     }
 
+    /**
+     * --- Module 1 & 4 Integration: History List ---
+     * This connects our UI (RecyclerView) to our Data (Room Database).
+     */
     private fun setupHistoryList() {
-        val rvHistory = findViewById<RecyclerView>(R.id.rvHistory)
-        rvHistory.layoutManager = LinearLayoutManager(this)
+        val recyclerHistory = findViewById<RecyclerView>(R.id.recyclerHistory)
+        recyclerHistory.layoutManager = LinearLayoutManager(this)
 
-        // Observe the detection history from the database in real-time
+        /**
+         * OBSERVER APPROACH: This is the best way to handle "refreshes".
+         * Instead of manually refreshing the list, we "observe" the database.
+         * Whenever the Audio Service (Module 2) saves a new sound, Room 
+         * automatically notifies this block, and the UI updates instantly!
+         */
         lifecycleScope.launch {
             database.detectionDao().getAllDetections().collect { detections ->
-                // Whenever the database changes, this block runs automatically
-                rvHistory.adapter = DetectionAdapter(detections)
+                // This code runs every time a new sound is detected and saved!
+                recyclerHistory.adapter = HistoryAdapter(detections)
             }
         }
     }
 
+    /**
+     * --- Module 1 & 2 Integration: Control ---
+     * This connects the Toggle Button to the Audio Capture Service.
+     */
     private fun setupButtons() {
         val btnToggle = findViewById<MaterialButton>(R.id.btnToggleListening)
         val btnSettings = findViewById<View>(R.id.btnSettings)
 
+        // When the user clicks the big button...
         btnToggle.setOnClickListener {
+            // First, check if we have permission to use the Mic
             checkPermissionsAndToggle()
         }
 
@@ -92,30 +112,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Checks if we have the necessary permissions before toggling the service.
-     */
     private fun checkPermissionsAndToggle() {
-        val permissionsToRequest = mutableListOf(Manifest.permission.RECORD_AUDIO)
-        
-        // Android 13 (API 33) and above requires explicit permission for notifications
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        val allGranted = permissionsToRequest.all {
+        val allGranted = permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
 
         if (allGranted) {
             toggleListening()
         } else {
-            requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
+            // Ask the user for permission if we don't have it yet
+            requestPermissionLauncher.launch(permissions.toTypedArray())
         }
     }
 
     /**
-     * Logic to switch between listening and idle states.
+     * Starts or Stops the Foreground Service (Module 2).
      */
     private fun toggleListening() {
         val btnToggle = findViewById<MaterialButton>(R.id.btnToggleListening)
@@ -123,13 +139,19 @@ class MainActivity : AppCompatActivity() {
         val tvStatusText = findViewById<TextView>(R.id.tvStatusText)
 
         if (isListening) {
-            stopListeningService()
+            // STOP Module 2
+            stopService(Intent(this, ListeningService::class.java))
+            
+            // Update UI
             btnToggle.text = getString(R.string.start_listening)
             tvStatusText.text = getString(R.string.status_ready)
             cvStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_idle))
             stopPulseAnimation()
         } else {
-            startListeningService()
+            // START Module 2 (Audio Capture + ML + Alerts)
+            startService(Intent(this, ListeningService::class.java))
+            
+            // Update UI
             btnToggle.text = getString(R.string.stop_listening)
             tvStatusText.text = getString(R.string.status_listening_active)
             cvStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_listening))
@@ -138,9 +160,7 @@ class MainActivity : AppCompatActivity() {
         isListening = !isListening
     }
 
-    /**
-     * Creates a simple pulsing effect by animating the scale of the Status Card.
-     */
+    // --- UI Polish: Pulsing Animation ---
     private fun startPulseAnimation(view: View) {
         pulseAnimator = ObjectAnimator.ofPropertyValuesHolder(
             view,
@@ -162,11 +182,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startListeningService() {
-        startService(Intent(this, ListeningService::class.java))
-    }
-
-    private fun stopListeningService() {
-        stopService(Intent(this, ListeningService::class.java))
+    private fun initializeDefaultSettings() {
+        lifecycleScope.launch {
+            val currentSettings = database.soundSettingDao().getAllSettings()
+            if (currentSettings.isEmpty()) {
+                val defaults = listOf(
+                    SoundSetting("Doorbell", true, 0.10f),
+                    SoundSetting("Alarm", true, 0.10f),
+                    SoundSetting("Knock", true, 0.10f),
+                    SoundSetting("Baby crying", true, 0.10f),
+                    SoundSetting("Telephone bell ringing", true, 0.10f),
+                    SoundSetting("GlobalSensitivity", true, 0.10f), // Easy start
+                    SoundSetting("RingtoneAlert", true, 0.0f),      // ON by default
+                    SoundSetting("ContinuousAlert", true, 0.0f)     // ON by default
+                )
+                defaults.forEach { database.soundSettingDao().saveSetting(it) }
+            }
+        }
     }
 }

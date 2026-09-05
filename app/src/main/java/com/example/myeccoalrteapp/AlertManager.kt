@@ -1,8 +1,12 @@
 package com.example.myeccoalrteapp
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -10,29 +14,31 @@ import android.os.VibratorManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
-/**
- * AlertManager handles telling the user that a sound was detected
- * through physical vibration and a high-priority notification.
- */
 object AlertManager {
 
     private const val CHANNEL_ID = "DetectionAlertChannel"
     private const val CHANNEL_NAME = "Sound Detections"
+    
+    private var activeVibrator: Vibrator? = null
 
-    /**
-     * Triggers both a vibration and a notification.
-     */
-    fun trigger(context: Context, soundLabel: String) {
-        Log.i("AlertManager", "Triggering alert for: $soundLabel")
+    fun trigger(context: Context, soundLabel: String, playSound: Boolean = false, isContinuous: Boolean = false) {
+        Log.i("AlertManager", "Triggering alert for: $soundLabel (Sound: $playSound, Continuous: $isContinuous)")
         
-        vibratePhone(context)
-        showNotification(context, soundLabel)
+        startVibration(context, isContinuous)
+        
+        if (playSound) {
+            playAlertSound(context)
+        }
+        showNotification(context, soundLabel, isContinuous)
     }
 
-    /**
-     * Vibrates the device for 800 milliseconds.
-     */
-    private fun vibratePhone(context: Context) {
+    fun stopVibration() {
+        Log.d("AlertManager", "Stopping all active vibrations")
+        activeVibrator?.cancel()
+        activeVibrator = null
+    }
+
+    private fun startVibration(context: Context, isContinuous: Boolean) {
         val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
             vibratorManager.defaultVibrator
@@ -40,37 +46,69 @@ object AlertManager {
             @Suppress("DEPRECATION")
             context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         }
+        
+        activeVibrator = vibrator
 
-        vibrator.vibrate(VibrationEffect.createOneShot(800, VibrationEffect.DEFAULT_AMPLITUDE))
+        if (isContinuous) {
+            // Pattern: [Wait 0ms, Vibrate 1000ms, Wait 500ms, Vibrate 1000ms...]
+            val pattern = longArrayOf(0, 1000, 500)
+            vibrator.vibrate(VibrationEffect.createWaveform(pattern, 1))
+        } else {
+            // Strong single pulse
+            vibrator.vibrate(VibrationEffect.createOneShot(1000, VibrationEffect.DEFAULT_AMPLITUDE))
+        }
     }
 
-    /**
-     * Shows a high-priority notification in the system drawer.
-     */
-    private fun showNotification(context: Context, soundLabel: String) {
+    private fun playAlertSound(context: Context) {
+        try {
+            val notificationUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM) 
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val ringtone = RingtoneManager.getRingtone(context, notificationUri)
+            ringtone.play()
+        } catch (e: Exception) {
+            Log.e("AlertManager", "Error playing sound: ${e.message}")
+        }
+    }
+
+    private fun showNotification(context: Context, soundLabel: String, isContinuous: Boolean) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // Create the channel if it doesn't exist (Required for Android 8.0+)
         val channel = NotificationChannel(
             CHANNEL_ID,
             CHANNEL_NAME,
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "Alerts for detected sounds like alarms or doorbells"
+            description = "Alerts for detected sounds"
             enableVibration(true)
+            // Ensure notification can break through Do Not Disturb
+            setBypassDnd(true)
+            setLockscreenVisibility(Notification.VISIBILITY_PUBLIC)
         }
         notificationManager.createNotificationChannel(channel)
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_listening_active)
-            .setContentTitle("Sound Detected!")
-            .setContentText("EchoAlert identified a $soundLabel")
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setAutoCancel(true)
-            .build()
+        val dismissIntent = Intent(context, ListeningService::class.java).apply {
+            action = "ACTION_DISMISS_ALERT"
+        }
+        val dismissPendingIntent = PendingIntent.getService(
+            context, 0, dismissIntent, 
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
-        // We use a unique ID for each notification so they don't overwrite each other
-        notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_listening_active)
+            .setContentTitle("CRITICAL SOUND: $soundLabel")
+            .setContentText("Tap DISMISS to stop the alert.")
+            .setPriority(NotificationCompat.PRIORITY_MAX) // Use MAX for overlay/heads-up
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setFullScreenIntent(null, true) // Increases visibility
+            .setAutoCancel(true)
+
+        if (isContinuous) {
+            builder.addAction(R.drawable.ic_back, "DISMISS", dismissPendingIntent)
+            builder.setOngoing(true)
+        }
+
+        // Using a fixed ID (1001) so we can dismiss it easily from the service
+        notificationManager.notify(1001, builder.build())
     }
 }
