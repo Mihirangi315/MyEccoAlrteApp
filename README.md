@@ -7,40 +7,58 @@
 ## 🌟 Key Features
 
 - **Real-time Monitoring**: Uses a Foreground Service to listen for sounds even when the app is in the background or the screen is locked.
-- **ML-Powered Detection**: Leverages the **YAMNet** audio classification model (TensorFlow Lite) to identify specific sounds:
+- **Nitro-Speed Detection**: Implements a **Sliding Window** algorithm to analyze audio every **100ms**, ensuring near-instant response times.
+- **ML-Powered Classification**: Leverages the **YAMNet** audio classification model (TensorFlow Lite) to identify:
     - 🔔 Doorbell
-    - ⏰ Alarms/Sirens
+    - ⏰ Alarms/Sirens/Smoke Detectors
     - 👶 Baby Crying
-    - 📞 Phone Ringing
+    - 📞 Phone Ringing/Ringtones
     - ✊ Door Knocks
-- **Accessibility Alerts**: Immediate alerts via high-priority notifications and distinct vibration patterns.
-- **Detection History**: A local log of all detected sounds with timestamps and icons for easy review.
-- **Customizable Settings**: Toggle specific sound targets on/off and adjust microphone sensitivity.
-- **Modern UI**: Built with **Material 3**, featuring a pulsing "Listening" status indicator and intuitive iconography.
+- **Smart Alerts**: 
+    - **Continuous Mode**: Optional repeating haptic alerts for critical sounds.
+    - **One-Tap Dismiss**: Quickly silence alerts via a notification action button.
+    - **Audible Ringtone**: User-configurable sound alerts.
+- **Detection History**: A persistent log of all sound events with icons and timestamps, powered by **Room**.
+- **Modern UI**: Built with **Material 3**, featuring a pulsing "Listening" status indicator and a live sensitivity percentage display.
 
 ---
 
 ## 🏗️ Architecture
 
-The project is structured into 5 distinct layers to facilitate team collaboration:
+The project follows a modular 5-layer architecture:
 
-1.  **UI Layer**: Manages the Dashboard, Settings, and History screens (using RecyclerView and Material Components).
-2.  **Audio Capture Layer**: Handles raw audio input (16kHz Mono 16-bit PCM) using the `AudioRecord` API.
-3.  **ML Classification Layer**: Processes audio buffers through a pre-trained YAMNet TFLite model.
-4.  **Data Layer**: Manages local persistence for settings and detection history using **Room**.
-5.  **Alert Layer**: Orchestrates user-facing alerts (NotificationManager and Vibrator API).
+1.  **UI Layer**: Dashboard, Settings, and History screens built with Material 3 and XML Views.
+2.  **Audio Capture Layer**: Low-latency raw audio input (16kHz Mono 16-bit PCM) using the `AudioRecord` API.
+3.  **ML Layer**: On-device inference using TFLite and intelligent label grouping to improve accuracy.
+4.  **Data Layer**: Local SQLite persistence for history and settings using the **Room** library.
+5.  **Alert Layer**: Advanced haptic feedback (Waveform Vibrations) and high-priority notification management.
+
+---
+
+## 🚀 Performance Optimizations
+
+To meet the requirements of a high-performance accessibility app, we implemented several key technical features:
+
+- **Sliding Window Analysis**: By overlapping audio chunks, we increased detection resolution from 1 second to 100 milliseconds, catching brief sounds like knocks more reliably.
+- **RAM Caching**: User preferences and sensitivity thresholds are cached in memory. This eliminates database latency, allowing alerts to trigger the microsecond a sound is identified.
+- **Label Grouping**: We mapped 10 specific YAMNet sound indices into 5 logical categories to reduce "near-miss" classifications and increase user-facing confidence.
 
 ---
 
 ## 🛠️ Tech Stack
 
 - **Language**: Kotlin
-- **Asynchrony**: Kotlin Coroutines
-- **UI Framework**: Jetpack Compose / Material Design 3
-- **Machine Learning**: TensorFlow Lite (YAMNet)
-- **Database**: Room Persistence Library
+- **Asynchrony**: Kotlin Coroutines & Flow
+- **UI Framework**: Material Design 3 (XML)
+- **Machine Learning**: TensorFlow Lite (YAMNet Model)
+- **Database**: Room Persistence Library (with KSP)
 - **Min SDK**: 26 (Android 8.0)
 - **Target SDK**: 37
+
+---
+
+## 🎓 About
+This project was developed as part of a university group project over a 1-week timeline by a team of 5 members.
 
 ---
 
@@ -48,17 +66,12 @@ The project is structured into 5 distinct layers to facilitate team collaboratio
 
 1.  **Clone the Repository**:
     ```bash
-    git clone https://github.com/your-repo/EchoAlert.git
+    git clone https://github.com/Mihirangi315/MyEccoAlrteApp.git
     ```
-2.  **Open in Android Studio**:
-    - Ensure you have **Android Studio Ladybug** (or newer) installed.
-    - Sync the project with Gradle files.
+2.  **Add the ML Model**:
+    - Download the **YAMNet TFLite** model from Kaggle.
+    - Place it in `app/src/main/assets/` and rename it to `yamnet.tflite`.
 3.  **Permissions**:
-    - The app requires `RECORD_AUDIO` and `POST_NOTIFICATIONS` (on Android 13+) permissions to function.
+    - Grant `RECORD_AUDIO` and `POST_NOTIFICATIONS` permissions on launch.
 4.  **Run**:
-    - Deploy to a physical device or emulator with microphone support.
-
----
-
-## 🎓 About
-This project was developed as part of a university group project over a 1-week timeline by a team of 5 members.
+    - Deploy to a physical device for the best haptic experience.
