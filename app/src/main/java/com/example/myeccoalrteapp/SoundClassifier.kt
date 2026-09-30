@@ -8,14 +8,18 @@ import java.io.FileInputStream
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 
+/**
+ * SoundClassifier uses a pre-trained YAMNet model to identify sounds.
+ * Updated with "Smart Competition" logic to reduce false positives from music and speech.
+ */
 object SoundClassifier {
 
     private const val MODEL_FILENAME = "yamnet.tflite"
     
-    // Minimum score to even consider it a "match"
-    private const val CONFIDENCE_THRESHOLD = 0.05f 
+    // Raised threshold to 0.15 to filter out low-level background room noise
+    private const val CONFIDENCE_THRESHOLD = 0.15f 
 
-    // Grouping labels correctly to match your Settings exactly
+    // Grouping labels: Removed broad indices prone to false positives (like general 'Telephone')
     private val TARGET_LABELS = mapOf(
         20 to "Baby crying",
         21 to "Baby crying",
@@ -23,11 +27,9 @@ object SoundClassifier {
         351 to "Doorbell",
         353 to "Knock",
         382 to "Alarm",
-        383 to "Telephone bell ringing", // Updated index 383
-        384 to "Telephone bell ringing",
-        385 to "Telephone bell ringing", // Ringtone index
-        390 to "Alarm",
-        393 to "Alarm"
+        384 to "Telephone bell ringing", // Most specific telephone bell
+        390 to "Alarm",                  // Siren
+        393 to "Alarm"                   // Smoke detector
     )
 
     private var interpreter: Interpreter? = null
@@ -53,6 +55,9 @@ object SoundClassifier {
         return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
     }
 
+    /**
+     * Runs inference and compares target sounds against background noise (Music/Speech).
+     */
     fun classify(audioBuffer: FloatArray): Pair<String, Float>? {
         val tflite = interpreter ?: return null
 
@@ -67,38 +72,46 @@ object SoundClassifier {
         }
 
         val scores = output[0]
-        var maxConfidence = 0f
-        var bestLabel: String? = null
 
-        // 1. Check for our target sounds
+        // 1. Find the Absolute Top Sound out of all 521 categories (Music, Speech, etc.)
+        var globalTopScore = 0f
+        var globalTopIndex = -1
+        for (i in scores.indices) {
+            if (scores[i] > globalTopScore) {
+                globalTopScore = scores[i]
+                globalTopIndex = i
+            }
+        }
+
+        // 2. Find the best sound among our TARGET categories
+        var bestTargetScore = 0f
+        var bestTargetLabel: String? = null
         for ((index, label) in TARGET_LABELS) {
-            val confidence = scores[index]
-            if (confidence > maxConfidence && confidence > CONFIDENCE_THRESHOLD) {
-                maxConfidence = confidence
-                bestLabel = label
+            if (scores[index] > bestTargetScore) {
+                bestTargetScore = scores[index]
+                bestTargetLabel = label
             }
         }
 
-        // 2. DEBUGGING: If nothing caught, find the #1 sound out of ALL 521 sounds
-        // This helps us see if the model thinks the sound is something else (like "Speech")
-        if (bestLabel == null) {
-            var topScore = 0f
-            var topIndex = -1
-            for (i in scores.indices) {
-                if (scores[i] > topScore) {
-                    topScore = scores[i]
-                    topIndex = i
-                }
-            }
-            Log.v("SoundClassifier", "Top sound heard: Index $topIndex with score $topScore")
+        // 3. SMART COMPETITION LOGIC
+        // Case A: No target sound heard or it's below our minimum threshold
+        if (bestTargetLabel == null || bestTargetScore < CONFIDENCE_THRESHOLD) {
+            return null
         }
 
-        return if (bestLabel != null) {
-            Log.i("SoundClassifier", "MATCH! Detected: $bestLabel ($maxConfidence)")
-            Pair(bestLabel, maxConfidence)
-        } else {
-            null
+        // Case B: A target was heard! Now check if it's "competing" with noise (like Music)
+        // If the top global sound is NOT a target sound, we check the ratio.
+        if (!TARGET_LABELS.containsKey(globalTopIndex)) {
+            // If the target sound is less than 50% as strong as the noise (Music/Speech), ignore it.
+            if (bestTargetScore < (globalTopScore * 0.5f)) {
+                Log.d("SoundClassifier", "Ignoring $bestTargetLabel ($bestTargetScore) due to stronger noise: Index $globalTopIndex ($globalTopScore)")
+                return null
+            }
         }
+
+        // Case C: Target sound is strong and "wins" or is competitive enough!
+        Log.i("SoundClassifier", "MATCH! Detected: $bestTargetLabel ($bestTargetScore)")
+        return Pair(bestTargetLabel, bestTargetScore)
     }
 
     fun close() {

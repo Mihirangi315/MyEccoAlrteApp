@@ -40,12 +40,17 @@ class ListeningService : Service() {
         private const val CHANNEL_ID = "EchoAlertChannel"
         private const val NOTIFICATION_ID = 1
         const val ACTION_DISMISS_ALERT = "ACTION_DISMISS_ALERT"
+
+        // Static flag to let the UI know if we are currently listening
+        var isRunning = false
+            private set
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         createNotificationChannel()
         SoundClassifier.initialize(this)
         database = AppDatabase.getDatabase(this)
@@ -158,6 +163,7 @@ class ListeningService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isRunning = false
         isRecording = false
         audioRecord?.stop()
         audioRecord?.release()

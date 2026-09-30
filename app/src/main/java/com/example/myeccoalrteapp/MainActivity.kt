@@ -3,6 +3,7 @@ package com.example.myeccoalrteapp
 import android.Manifest
 import android.animation.ObjectAnimator
 import android.animation.PropertyValuesHolder
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -13,6 +14,7 @@ import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -52,6 +54,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Ensure theme is applied
+        applySavedTheme()
+        
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
 
@@ -69,6 +75,35 @@ class MainActivity : AppCompatActivity() {
 
         setupHistoryList()
         setupButtons()
+
+        // --- ROTATION STABILITY FIX ---
+        // Check if the service is already running (from a previous session before rotation)
+        if (ListeningService.isRunning) {
+            isListening = true
+            syncUIWithListeningState(true)
+        }
+    }
+
+    /**
+     * Updates the button text, card color, and starts/stops animation 
+     * based on whether the app is currently listening.
+     */
+    private fun syncUIWithListeningState(listening: Boolean) {
+        val btnToggle = findViewById<MaterialButton>(R.id.btnToggleListening)
+        val cvStatus = findViewById<MaterialCardView>(R.id.cvStatus)
+        val tvStatusText = findViewById<TextView>(R.id.tvStatusText)
+
+        if (listening) {
+            btnToggle.text = getString(R.string.stop_listening)
+            tvStatusText.text = getString(R.string.status_listening_active)
+            cvStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_listening))
+            startPulseAnimation(cvStatus)
+        } else {
+            btnToggle.text = getString(R.string.start_listening)
+            tvStatusText.text = getString(R.string.status_ready)
+            cvStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_idle))
+            stopPulseAnimation()
+        }
     }
 
     /**
@@ -77,6 +112,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun setupHistoryList() {
         val recyclerHistory = findViewById<RecyclerView>(R.id.recyclerHistory)
+        val btnClear = findViewById<View>(R.id.btnClearHistory)
         recyclerHistory.layoutManager = LinearLayoutManager(this)
 
         /**
@@ -89,6 +125,16 @@ class MainActivity : AppCompatActivity() {
             database.detectionDao().getAllDetections().collect { detections ->
                 // This code runs every time a new sound is detected and saved!
                 recyclerHistory.adapter = HistoryAdapter(detections)
+                
+                // Smart UI: Only show the "Clear All" button if there is history to clear
+                btnClear.visibility = if (detections.isNotEmpty()) View.VISIBLE else View.GONE
+            }
+        }
+
+        // --- Module 4 Integration: Clear History ---
+        btnClear.setOnClickListener {
+            lifecycleScope.launch {
+                database.detectionDao().clearAll()
             }
         }
     }
@@ -134,28 +180,14 @@ class MainActivity : AppCompatActivity() {
      * Starts or Stops the Foreground Service (Module 2).
      */
     private fun toggleListening() {
-        val btnToggle = findViewById<MaterialButton>(R.id.btnToggleListening)
-        val cvStatus = findViewById<MaterialCardView>(R.id.cvStatus)
-        val tvStatusText = findViewById<TextView>(R.id.tvStatusText)
-
         if (isListening) {
             // STOP Module 2
             stopService(Intent(this, ListeningService::class.java))
-            
-            // Update UI
-            btnToggle.text = getString(R.string.start_listening)
-            tvStatusText.text = getString(R.string.status_ready)
-            cvStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_idle))
-            stopPulseAnimation()
+            syncUIWithListeningState(false)
         } else {
             // START Module 2 (Audio Capture + ML + Alerts)
             startService(Intent(this, ListeningService::class.java))
-            
-            // Update UI
-            btnToggle.text = getString(R.string.stop_listening)
-            tvStatusText.text = getString(R.string.status_listening_active)
-            cvStatus.setCardBackgroundColor(ContextCompat.getColor(this, R.color.status_listening))
-            startPulseAnimation(cvStatus)
+            syncUIWithListeningState(true)
         }
         isListening = !isListening
     }
@@ -179,6 +211,14 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.cvStatus).apply {
             scaleX = 1.0f
             scaleY = 1.0f
+        }
+    }
+
+    private fun applySavedTheme() {
+        val prefs = getSharedPreferences("EchoAlertPrefs", Context.MODE_PRIVATE)
+        val themeMode = prefs.getInt("theme_mode", AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+        if (AppCompatDelegate.getDefaultNightMode() != themeMode) {
+            AppCompatDelegate.setDefaultNightMode(themeMode)
         }
     }
 

@@ -1,12 +1,16 @@
 package com.example.myeccoalrteapp
 
+import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.switchmaterial.SwitchMaterial
 import kotlinx.coroutines.launch
 
@@ -24,6 +28,8 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var switchContinuous: SwitchMaterial
     private lateinit var sbSensitivity: SeekBar
     private lateinit var tvSensitivityValue: TextView
+    private lateinit var toggleGroupTheme: MaterialButtonToggleGroup
+    private lateinit var btnLogout: MaterialButton
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,10 +52,29 @@ class SettingsActivity : AppCompatActivity() {
         switchContinuous = findViewById(R.id.switchContinuous)
         sbSensitivity = findViewById(R.id.sbSensitivity)
         tvSensitivityValue = findViewById(R.id.tvSensitivityValue)
+        toggleGroupTheme = findViewById(R.id.toggleGroupTheme)
+        btnLogout = findViewById(R.id.btnLogout)
 
         findViewById<MaterialButton>(R.id.btnBack).setOnClickListener {
             finish()
         }
+
+        btnLogout.setOnClickListener {
+            performLogout()
+        }
+    }
+
+    private fun performLogout() {
+        val prefs = getSharedPreferences("EchoAlertPrefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("is_logged_in", false).apply()
+        
+        // Stop service if running
+        stopService(Intent(this, ListeningService::class.java))
+
+        val intent = Intent(this, LoginActivity::class.java)
+        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        startActivity(intent)
+        finish()
     }
 
     private fun loadSettings() {
@@ -71,6 +96,15 @@ class SettingsActivity : AppCompatActivity() {
                         tvSensitivityValue.text = "$progress%"
                     }
                 }
+            }
+            
+            // Load theme preference
+            val prefs = getSharedPreferences("EchoAlertPrefs", Context.MODE_PRIVATE)
+            val themeMode = prefs.getInt("theme_mode", AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+            when (themeMode) {
+                AppCompatDelegate.MODE_NIGHT_NO -> toggleGroupTheme.check(R.id.btnThemeLight)
+                AppCompatDelegate.MODE_NIGHT_YES -> toggleGroupTheme.check(R.id.btnThemeDark)
+                else -> toggleGroupTheme.check(R.id.btnThemeSystem)
             }
         }
     }
@@ -102,6 +136,17 @@ class SettingsActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
+        
+        toggleGroupTheme.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                val mode = when (checkedId) {
+                    R.id.btnThemeLight -> AppCompatDelegate.MODE_NIGHT_NO
+                    R.id.btnThemeDark -> AppCompatDelegate.MODE_NIGHT_YES
+                    else -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+                }
+                saveThemePreference(mode)
+            }
+        }
     }
 
     private fun saveSoundSetting(label: String, enabled: Boolean) {
@@ -116,5 +161,11 @@ class SettingsActivity : AppCompatActivity() {
         lifecycleScope.launch {
             database.soundSettingDao().saveSetting(SoundSetting("GlobalSensitivity", true, value))
         }
+    }
+    
+    private fun saveThemePreference(mode: Int) {
+        val prefs = getSharedPreferences("EchoAlertPrefs", Context.MODE_PRIVATE)
+        prefs.edit().putInt("theme_mode", mode).apply()
+        AppCompatDelegate.setDefaultNightMode(mode)
     }
 }
